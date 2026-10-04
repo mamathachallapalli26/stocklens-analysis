@@ -1,0 +1,39 @@
+"""Load the 6 CSVs, clean them, and build stocks.db (SQLite)."""
+import glob, os, re, sqlite3
+import pandas as pd
+
+COLS = {"date": "date", "open price": "open_price", "high price": "high_price", "low price": "low_price",
+        "close price": "close_price", "wap": "wap", "no.of shares": "no_of_shares", "no. of trades": "no_of_trades",
+        "total turnover (rs.)": "total_turnover", "deliverable quantity": "deliverable_qty",
+        "% deli. qty to traded qty": "pct_deli_qty", "spread high-low": "spread_high_low",
+        "spread close-open": "spread_close_open"}
+PRICES = ["open_price", "high_price", "low_price", "close_price"]
+
+def clean(path):
+    df = pd.read_csv(path)
+    df.columns = [COLS[c.strip().lower()] for c in df.columns]
+    df["date"] = pd.to_datetime(df["date"].astype(str).str.strip(), format="%d-%B-%Y", errors="coerce")
+    for c in df.columns[1:]:
+        df[c] = pd.to_numeric(df[c].astype(str).str.replace(",", "").str.strip(), errors="coerce")
+    log = {"raw_rows": len(df)}
+    df = df.drop_duplicates()                                   # exact duplicate rows
+    df = df.drop_duplicates(subset="date", keep="first")        # same trading day twice
+    log["after_dedup"] = len(df)
+    df = df.dropna(subset=["date"] + PRICES)                    # unusable rows (no date / price)
+    df = df[(df[PRICES] > 0).all(axis=1)]                       # impossible prices
+    log["clean_rows"] = len(df)
+    log["null_deliverable"] = int(df["deliverable_qty"].isna().sum())  # kept as NULL, not used for price analysis
+    df["date"] = df["date"].dt.strftime("%Y-%m-%d")
+    return df.sort_values("date").reset_index(drop=True), log
+
+def build(db="stocks.db"):
+    if os.path.exists(db): os.remove(db)
+    con, report = sqlite3.connect(db), {}
+    for f in sorted(glob.glob("data/*.csv")):
+        name = re.sub(r"\W+", "_", os.path.splitext(os.path.basename(f))[0]).lower()
+        df, report[name] = clean(f)
+        df.to_sql(name, con, index=False)
+    con.commit(); return con, pd.DataFrame(report).T
+
+if __name__ == "__main__":
+    print(build()[1])
